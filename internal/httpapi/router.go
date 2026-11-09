@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 type AuthService interface {
 	Login(context.Context, string, string) (auth.LoginResult, error)
 	CurrentUser(context.Context, string) (auth.User, error)
+	Register(context.Context, string, string, string) (auth.User, error)
+	SetUserRole(context.Context, string, int64, string) (auth.User, error)
 }
 
 type handler struct {
@@ -44,7 +47,11 @@ func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Conte
 			writeError(writer, http.StatusTooManyRequests, "rate_limit_exceeded", "Too many login attempts; try again later")
 		}))).Post("/login", handlers.login)
 		router.Get("/me", handlers.currentUser)
+		router.With(httprate.LimitBy(5, time.Minute, clientIP, httprate.WithLimitHandler(func(writer http.ResponseWriter, request *http.Request) {
+			writeError(writer, http.StatusTooManyRequests, "rate_limit_exceeded", "Too many registration attempts; try again later")
+		}))).Post("/register", handlers.register)
 	})
+	router.Patch("/api/v1/admin/users/{userID}/role", handlers.setUserRole)
 	router.NotFound(func(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusNotFound, "not_found", "Endpoint not found")
 	})
@@ -55,25 +62,11 @@ func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Conte
 }
 
 func (handlers *handler) login(writer http.ResponseWriter, request *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeError(writer, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
-		return
-	}
-	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
 	var input struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := decoder.Decode(&input); err != nil {
-		writeDecodeError(writer, err)
-		return
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		writeDecodeError(writer, err)
+	if !decodeJSON(writer, request, &input) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
@@ -87,19 +80,94 @@ func (handlers *handler) login(writer http.ResponseWriter, request *http.Request
 }
 
 func (handlers *handler) currentUser(writer http.ResponseWriter, request *http.Request) {
-	parts := strings.Fields(request.Header.Get("Authorization"))
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 4096 {
+	token, ok := bearerToken(request)
+	if !ok {
 		writeUnauthorized(writer)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
 	defer cancel()
-	user, err := handlers.service.CurrentUser(ctx, parts[1])
+	user, err := handlers.service.CurrentUser(ctx, token)
 	if err != nil {
 		handlers.serviceError(writer, request, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"data": user})
+}
+
+func bearerToken(request *http.Request) (string, bool) {
+	parts := strings.Fields(request.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 4096 {
+		return "", false
+	}
+	return parts[1], true
+}
+
+func (handlers *handler) register(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	user, err := handlers.service.Register(ctx, input.Username, input.Email, input.Password)
+	if err != nil {
+		handlers.serviceError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]any{"data": user})
+}
+
+func (handlers *handler) setUserRole(writer http.ResponseWriter, request *http.Request) {
+	token, ok := bearerToken(request)
+	if !ok {
+		writeUnauthorized(writer)
+		return
+	}
+	userID, err := strconv.ParseInt(chi.URLParam(request, "userID"), 10, 64)
+	if err != nil || userID <= 0 {
+		handlers.serviceError(writer, request, auth.ErrInvalidRole)
+		return
+	}
+	var input struct {
+		Role string `json:"role"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	user, err := handlers.service.SetUserRole(ctx, token, userID, input.Role)
+	if err != nil {
+		handlers.serviceError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"data": user})
+}
+
+func decodeJSON(writer http.ResponseWriter, request *http.Request, input any) bool {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(writer, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
+		return false
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(input); err != nil {
+		writeDecodeError(writer, err)
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeDecodeError(writer, err)
+		return false
+	}
+	return true
 }
 
 func (handlers *handler) ready(writer http.ResponseWriter, request *http.Request) {
@@ -114,6 +182,16 @@ func (handlers *handler) ready(writer http.ResponseWriter, request *http.Request
 
 func (handlers *handler) serviceError(writer http.ResponseWriter, request *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrInvalidRegistration):
+		writeError(writer, http.StatusBadRequest, "invalid_registration", "Provide a username of 1 to 50 characters, a valid email, and a password of at least 12 characters and at most 72 bytes; password must not contain only whitespace")
+	case errors.Is(err, auth.ErrInvalidRole):
+		writeError(writer, http.StatusBadRequest, "invalid_role", "Provide a positive user ID and role user or admin")
+	case errors.Is(err, auth.ErrForbidden):
+		writeError(writer, http.StatusForbidden, "forbidden", "Admin role required")
+	case errors.Is(err, auth.ErrUserExists):
+		writeError(writer, http.StatusConflict, "user_exists", "Email or username already exists")
+	case errors.Is(err, auth.ErrUserNotFound):
+		writeError(writer, http.StatusNotFound, "user_not_found", "User not found")
 	case errors.Is(err, auth.ErrInvalidInput):
 		writeError(writer, http.StatusBadRequest, "invalid_input", "Provide a valid email and a password of 1 to 72 bytes")
 	case errors.Is(err, auth.ErrInvalidCredentials):
@@ -131,7 +209,7 @@ func writeDecodeError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusRequestEntityTooLarge, "body_too_large", "Request body must not exceed 4096 bytes")
 		return
 	}
-	writeError(writer, http.StatusBadRequest, "invalid_json", "Provide exactly one JSON object with email and password")
+	writeError(writer, http.StatusBadRequest, "invalid_json", "Provide exactly one JSON object with the expected fields")
 }
 
 func writeUnauthorized(writer http.ResponseWriter) {
@@ -165,7 +243,7 @@ func cors(allowedOrigin string) func(http.Handler) http.Handler {
 			if origin != "" && origin == allowedOrigin {
 				writer.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 				writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
 			}
 			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
 				if origin == "" || origin != allowedOrigin {

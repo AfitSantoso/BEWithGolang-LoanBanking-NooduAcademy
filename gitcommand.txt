@@ -1,0 +1,7 @@
+git config --global user.name afitsantoso
+git config --global user.email afitdesantos@gmail.com
+git init
+git remote add origin https:github.co.id
+git add .
+git commit -m "upload"
+git push origin main

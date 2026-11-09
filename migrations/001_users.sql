@@ -1,5 +1,5 @@
--- Run manually against the intended database using DBCode or psql.
--- CREATE TABLE is a baseline for empty databases; the existing Neon table is retained.
+-- Baseline reference for a new database; do not replay on the configured Neon DB.
+-- The existing Neon table is retained; registration/RBAC changes are recorded in 002.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS public.users (
