@@ -1,4 +1,4 @@
-# Menjalankan Login Service di Windows - Update
+# Menjalankan Login Service di Windows - Updatex
 
 Panduan ini menggunakan **Windows PowerShell 5.1 atau PowerShell 7**. Semua perintah dijalankan dari folder `BE-Golang`, kecuali disebutkan lain. Penjelasan struktur folder dan arsitektur tersedia di [README.md](README.md#struktur-folder).
 
@@ -64,15 +64,13 @@ Nilai `JWT_ISSUER` dan `JWT_AUDIENCE` dapat mengikuti template. Simpan `.env` se
 
 Password koneksi DBCode dari Mac tidak otomatis tersedia pada Windows. Ambil connection string dari Neon; aplikasi tidak membaca Secret Storage DBCode. URL-encode karakter khusus password jika merangkai URL secara manual. `.env` sudah diabaikan Git. Environment yang sudah diekspor mengalahkan nilai dari `.env`.
 
-## 4. Jalankan migrasi melalui DBCode
+## 4. Gunakan database Loan_Banking di Neon
 
-1. Di VS Code Windows, install extension DBCode dan hubungkan ke database Neon yang dituju, misalnya `Loan_Banking`.
-2. Buka [migrations/001_users.sql](migrations/001_users.sql).
-3. Pastikan koneksi/database yang dipilih benar, lalu jalankan **seluruh file**, termasuk `BEGIN` dan `COMMIT`.
+Pastikan `DATABASE_URL` pada `.env` memilih database **`Loan_Banking`**, bukan `neondb`. Skema registrasi/RBAC sudah diterapkan langsung ke `Loan_Banking` pada 7 November 2026; Anda tidak perlu menjalankan migrasi manual untuk database tersebut. Tabel tujuan adalah `public.users`, dengan kolom `password_hash`, `username`, dan `role`.
 
-Migrasi menyediakan tabel jika belum ada dan menambahkan index unik email/username. Jika database yang sama sudah dimigrasi dari Mac, langkah ini tidak perlu diulang. Jika migrasi gagal karena identitas duplikat, jalankan `ROLLBACK;`, selesaikan duplikasi, lalu ulangi. Jangan menghapus data akun tanpa meninjaunya.
+Pilih database serta branch yang sama pada dashboard Neon atau DBCode untuk melihat akun yang baru didaftarkan. Setelah mengubah `.env`, hentikan backend dengan Ctrl+C lalu jalankan kembali `go run .`. Log `database connected` harus menampilkan `Loan_Banking`. Akun yang dahulu dibuat di `neondb` tidak dipindahkan atau dihapus otomatis.
 
-Tidak perlu menginstall server PostgreSQL lokal karena service menggunakan Neon. Migrasi tidak berjalan otomatis saat server dimulai.
+Tidak perlu memasang PostgreSQL lokal. File SQL di `migrations/` disimpan sebagai catatan perubahan dan referensi database baru.
 
 ## 5. Unduh dependensi dan siapkan akun
 

@@ -14,6 +14,19 @@ type stubRepository struct {
 	user          User
 	err           error
 	lookedUpEmail string
+	createdRole   string
+	createdHash   string
+	setRoleCalls  int
+}
+
+func (repository *stubRepository) Create(ctx context.Context, username, email, hash, role string) (User, error) {
+	repository.createdRole, repository.createdHash = role, hash
+	return User{ID: 43, Username: username, Email: email, Role: role, PasswordHash: hash, IsActive: true}, repository.err
+}
+
+func (repository *stubRepository) SetRole(ctx context.Context, actorID, userID int64, role string) (User, error) {
+	repository.setRoleCalls++
+	return User{ID: userID, Role: role, PasswordHash: "must-not-leak"}, repository.err
 }
 
 func (repository *stubRepository) FindByEmail(ctx context.Context, email string) (User, error) {
@@ -119,5 +132,77 @@ func TestHashPassword(t *testing.T) {
 	cost, err := bcrypt.Cost([]byte(hash))
 	if err != nil || cost != passwordCost {
 		t.Fatalf("unexpected bcrypt cost: %d, %v", cost, err)
+	}
+}
+
+func TestRegisterAndRBAC(t *testing.T) {
+	repository := &stubRepository{user: User{ID: 1, IsActive: true, Role: RoleAdmin}}
+	manager := NewTokenManager(strings.Repeat("s", 32), "test-api", "test-web", 15*time.Minute)
+	service, err := NewService(repository, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	user, err := service.Register(ctx, " alice ", " Alice@Example.com ", "valid-password-123")
+	if err != nil || user.Role != RoleUser || user.Username != "alice" || user.Email != "alice@example.com" || user.PasswordHash != "" {
+		t.Fatalf("registration failed: %#v, %v", user, err)
+	}
+	if repository.createdRole != RoleUser || bcrypt.CompareHashAndPassword([]byte(repository.createdHash), []byte("valid-password-123")) != nil {
+		t.Fatal("registration must persist user role and bcrypt hash")
+	}
+	for _, input := range []struct{ username, email, password string }{
+		{"", "a@example.com", "valid-password-123"},
+		{strings.Repeat("a", 51), "a@example.com", "valid-password-123"},
+		{"a\nb", "a@example.com", "valid-password-123"},
+		{"alice", "invalid", "valid-password-123"},
+		{"alice", "a@example.com", "short"},
+		{"alice", "a@example.com", strings.Repeat(" ", 12)},
+	} {
+		if _, err := service.Register(ctx, input.username, input.email, input.password); !errors.Is(err, ErrInvalidRegistration) {
+			t.Fatalf("invalid registration accepted: %v", err)
+		}
+	}
+	repository.err = ErrUserExists
+	if _, err := service.Register(ctx, "alice", "alice@example.com", "valid-password-123"); !errors.Is(err, ErrUserExists) {
+		t.Fatal(err)
+	}
+	repository.err = nil
+	token, _, err := manager.Issue(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{RoleUser, RoleAdmin} {
+		updated, err := service.SetUserRole(ctx, token, 43, role)
+		if err != nil || updated.Role != role || updated.PasswordHash != "" {
+			t.Fatalf("admin update failed: %#v, %v", updated, err)
+		}
+	}
+	for _, input := range []struct {
+		id   int64
+		role string
+	}{{0, RoleAdmin}, {-1, RoleAdmin}, {43, "owner"}, {43, ""}} {
+		if _, err := service.SetUserRole(ctx, token, input.id, input.role); !errors.Is(err, ErrInvalidRole) {
+			t.Fatalf("invalid role accepted: %v", err)
+		}
+	}
+	calls := repository.setRoleCalls
+	// Reuse the same token after a database role change: authorization must change immediately.
+	repository.user.Role = RoleUser
+	if _, err := service.SetUserRole(ctx, token, 43, RoleAdmin); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("user escalated privileges: %v", err)
+	}
+	repository.user.Role = "unknown"
+	if _, err := service.SetUserRole(ctx, token, 43, RoleAdmin); !errors.Is(err, ErrForbidden) {
+		t.Fatal(err)
+	}
+	repository.user.Role, repository.user.IsActive = RoleAdmin, false
+	if _, err := service.SetUserRole(ctx, token, 43, RoleAdmin); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal(err)
+	}
+	if _, err := service.SetUserRole(ctx, "broken-token", 43, RoleAdmin); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal(err)
+	}
+	if repository.setRoleCalls != calls {
+		t.Fatal("unauthorized updates reached repository")
 	}
 }

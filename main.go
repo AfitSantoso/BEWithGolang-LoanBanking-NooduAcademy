@@ -36,6 +36,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
+	logger.Info("database connected", "database", pool.Config().ConnConfig.Database)
 	tokens := auth.NewTokenManager(settings.JWTSecret, settings.JWTIssuer, settings.JWTAudience, settings.JWTTTL)
 	service, err := auth.NewService(auth.NewPostgresRepository(pool), tokens)
 	if err != nil {

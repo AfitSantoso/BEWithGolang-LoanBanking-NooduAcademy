@@ -15,8 +15,20 @@ import (
 )
 
 type stubService struct {
-	err        error
-	loginCalls int
+	err           error
+	loginCalls    int
+	registerCalls int
+	roleCalls     int
+}
+
+func (service *stubService) Register(ctx context.Context, username, email, password string) (auth.User, error) {
+	service.registerCalls++
+	return auth.User{ID: 43, Username: username, Email: email, Role: auth.RoleUser, PasswordHash: "secret-hash"}, service.err
+}
+
+func (service *stubService) SetUserRole(ctx context.Context, token string, userID int64, role string) (auth.User, error) {
+	service.roleCalls++
+	return auth.User{ID: userID, Role: role, PasswordHash: "secret-hash"}, service.err
 }
 
 func (service *stubService) Login(ctx context.Context, email, password string) (auth.LoginResult, error) {
@@ -154,5 +166,73 @@ func TestCORSAndReadiness(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if response.Code != 503 || strings.Contains(response.Body.String(), "private database error") {
 		t.Fatalf("unsafe readiness response: %s", response.Body.String())
+	}
+}
+
+func TestRegistrationAndRoleEndpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body, token, contentType string
+		err                                          error
+		status                                       int
+	}{
+		{"register", "POST", "/api/v1/auth/register", `{"username":"alice","email":"alice@example.com","password":"valid-password-123"}`, "", "application/json", nil, 201},
+		{"reject public admin", "POST", "/api/v1/auth/register", `{"username":"alice","email":"alice@example.com","password":"valid-password-123","role":"admin"}`, "", "application/json", nil, 400},
+		{"duplicate", "POST", "/api/v1/auth/register", `{}`, "", "application/json", auth.ErrUserExists, 409},
+		{"invalid input", "POST", "/api/v1/auth/register", `{}`, "", "application/json", auth.ErrInvalidRegistration, 400},
+		{"media type", "POST", "/api/v1/auth/register", `{}`, "", "text/plain", nil, 415},
+		{"oversize", "POST", "/api/v1/auth/register", `{"username":"` + strings.Repeat("a", 5000) + `"}`, "", "application/json", nil, 413},
+		{"role update", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "Bearer valid", "application/json", nil, 200},
+		{"missing token", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "", "application/json", nil, 401},
+		{"bad token", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "Bearer invalid", "application/json", auth.ErrInvalidCredentials, 401},
+		{"user forbidden", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "Bearer valid", "application/json", auth.ErrForbidden, 403},
+		{"unknown user", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "Bearer valid", "application/json", auth.ErrUserNotFound, 404},
+		{"invalid role", "PATCH", "/api/v1/admin/users/43/role", `{"role":"owner"}`, "Bearer valid", "application/json", auth.ErrInvalidRole, 400},
+		{"invalid ID", "PATCH", "/api/v1/admin/users/abc/role", `{"role":"admin"}`, "Bearer valid", "application/json", nil, 400},
+		{"zero ID", "PATCH", "/api/v1/admin/users/0/role", `{"role":"admin"}`, "Bearer valid", "application/json", nil, 400},
+		{"extra field", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin","is_active":true}`, "Bearer valid", "application/json", nil, 400},
+		{"internal error", "PATCH", "/api/v1/admin/users/43/role", `{"role":"admin"}`, "Bearer valid", "application/json", errors.New("private database error"), 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &stubService{err: tc.err}
+			router := newTestRouter(service)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			req.Header.Set("Authorization", tc.token)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tc.status {
+				t.Fatalf("got %d: %s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "secret-hash") || strings.Contains(response.Body.String(), "private database error") {
+				t.Fatal("secret leaked")
+			}
+			if tc.name == "reject public admin" && service.registerCalls != 0 {
+				t.Fatal("role injection reached service")
+			}
+			if tc.name == "missing token" && service.roleCalls != 0 {
+				t.Fatal("missing authentication reached service")
+			}
+		})
+	}
+}
+
+func TestRegistrationRateLimitAndPATCHPreflight(t *testing.T) {
+	router := newTestRouter(&stubService{})
+	for attempt := 0; attempt < 6; attempt++ {
+		req := httptest.NewRequest("POST", "/api/v1/auth/register", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		if attempt == 5 && (response.Code != 429 || response.Header().Get("Retry-After") == "") {
+			t.Fatal("registration rate limit missing")
+		}
+	}
+	req := httptest.NewRequest("OPTIONS", "/api/v1/admin/users/43/role", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PATCH")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != 204 || !strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), "PATCH") {
+		t.Fatal("PATCH preflight not allowed")
 	}
 }

@@ -6,10 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"backend-loanbanking/internal/auth"
 	"backend-loanbanking/internal/config"
@@ -28,10 +25,14 @@ func main() {
 func run() error {
 	usernameFlag := flag.String("username", "", "Unique username (1 to 50 characters)")
 	emailFlag := flag.String("email", "", "Unique email address")
+	roleFlag := flag.String("role", auth.RoleUser, "Account role: user or admin")
 	flag.Parse()
-	username := strings.TrimSpace(*usernameFlag)
-	if username == "" || !utf8.ValidString(username) || utf8.RuneCountInString(username) > 50 || strings.ContainsFunc(username, unicode.IsControl) {
+	username, err := auth.NormalizeUsername(*usernameFlag)
+	if err != nil {
 		return errors.New("provide --username with 1 to 50 characters and no control characters")
+	}
+	if !auth.ValidRole(*roleFlag) {
+		return errors.New("provide --role user or admin")
 	}
 	email, err := auth.NormalizeEmail(*emailFlag)
 	if err != nil {
@@ -72,10 +73,10 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
-	user, err := auth.NewPostgresRepository(pool).Create(ctx, username, email, passwordHash)
+	user, err := auth.NewPostgresRepository(pool).Create(ctx, username, email, passwordHash, *roleFlag)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("User created successfully (id=%d).\n", user.ID)
+	fmt.Printf("User created successfully (id=%d, role=%s).\n", user.ID, user.Role)
 	return nil
 }

@@ -73,3 +73,44 @@ func (service *Service) CurrentUser(ctx context.Context, accessToken string) (Us
 	user.PasswordHash = ""
 	return user, nil
 }
+
+// Register never accepts a role from public input.
+func (service *Service) Register(ctx context.Context, username, email, password string) (User, error) {
+	username, err := NormalizeUsername(username)
+	if err != nil {
+		return User{}, ErrInvalidRegistration
+	}
+	email, err = NormalizeEmail(email)
+	if err != nil {
+		return User{}, ErrInvalidRegistration
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return User{}, ErrInvalidRegistration
+	}
+	user, err := service.repository.Create(ctx, username, email, hash, RoleUser)
+	if err != nil {
+		return User{}, err
+	}
+	user.PasswordHash = ""
+	return user, nil
+}
+
+func (service *Service) SetUserRole(ctx context.Context, accessToken string, userID int64, role string) (User, error) {
+	actor, err := service.CurrentUser(ctx, accessToken)
+	if err != nil {
+		return User{}, err
+	}
+	if actor.Role != RoleAdmin {
+		return User{}, ErrForbidden
+	}
+	if userID <= 0 || !ValidRole(role) {
+		return User{}, ErrInvalidRole
+	}
+	user, err := service.repository.SetRole(ctx, actor.ID, userID, role)
+	if err != nil {
+		return User{}, err
+	}
+	user.PasswordHash = ""
+	return user, nil
+}
