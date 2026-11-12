@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"backend-loanbanking/internal/auth"
+	customerhttp "backend-loanbanking/internal/customer/http"
+	authmiddleware "backend-loanbanking/internal/httpapi/middleware"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -33,7 +35,19 @@ type handler struct {
 	ping    func(context.Context) error
 }
 
-func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Context) error, corsOrigin string) http.Handler {
+type routerOptions struct{ customers customerhttp.Service }
+
+type Option func(*routerOptions)
+
+func WithCustomerService(service customerhttp.Service) Option {
+	return func(options *routerOptions) { options.customers = service }
+}
+
+func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Context) error, corsOrigin string, options ...Option) http.Handler {
+	settings := routerOptions{}
+	for _, option := range options {
+		option(&settings)
+	}
 	handlers := &handler{service: service, logger: logger, ping: ping}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer, middleware.Throttle(32))
@@ -52,6 +66,12 @@ func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Conte
 		}))).Post("/register", handlers.register)
 	})
 	router.Patch("/api/v1/admin/users/{userID}/role", handlers.setUserRole)
+	if settings.customers != nil {
+		router.Route("/api/v1/customers", func(router chi.Router) {
+			router.Use(authmiddleware.RequireActiveUser(service, logger))
+			customerhttp.NewHandler(settings.customers, logger).Routes(router)
+		})
+	}
 	router.NotFound(func(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusNotFound, "not_found", "Endpoint not found")
 	})
@@ -243,7 +263,7 @@ func cors(allowedOrigin string) func(http.Handler) http.Handler {
 			if origin != "" && origin == allowedOrigin {
 				writer.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 				writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS")
 			}
 			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
 				if origin == "" || origin != allowedOrigin {

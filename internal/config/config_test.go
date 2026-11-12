@@ -10,6 +10,7 @@ func TestConfigValidation(t *testing.T) {
 	t.Setenv("JWT_SECRET", strings.Repeat("s", 32))
 	t.Setenv("JWT_TTL", "15m")
 	t.Setenv("CORS_ORIGIN", "http://localhost:3000")
+	t.Setenv("IMGBB_API_KEY", "test-key")
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -22,6 +23,7 @@ func TestConfigValidation(t *testing.T) {
 		{"JWT_TTL", "invalid"},
 		{"CORS_ORIGIN", "*"},
 		{"CORS_ORIGIN", "http://localhost:3000/path"},
+		{"IMGBB_API_KEY", "test key"},
 	} {
 		t.Run(testCase.key+"="+testCase.value, func(t *testing.T) {
 			t.Setenv(testCase.key, testCase.value)

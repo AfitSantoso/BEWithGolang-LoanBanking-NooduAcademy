@@ -12,8 +12,10 @@ import (
 
 	"backend-loanbanking/internal/auth"
 	"backend-loanbanking/internal/config"
+	"backend-loanbanking/internal/customer"
 	"backend-loanbanking/internal/database"
 	"backend-loanbanking/internal/httpapi"
+	"backend-loanbanking/internal/imagehost/imgbb"
 )
 
 func main() {
@@ -42,12 +44,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	var customerOptions []customer.Option
+	if settings.ImgBBAPIKey != "" {
+		customerOptions = append(customerOptions, customer.WithImageUploader(imgbb.NewClient(settings.ImgBBAPIKey)))
+	}
+	customerService := customer.NewService(customer.NewPostgresRepository(pool), customerOptions...)
 	server := &http.Server{
 		Addr:              settings.HTTPAddress,
-		Handler:           httpapi.NewRouter(service, logger, pool.Ping, settings.CORSOrigin),
+		Handler:           httpapi.NewRouter(service, logger, pool.Ping, settings.CORSOrigin, httpapi.WithCustomerService(customerService)),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 * 1024,
 	}

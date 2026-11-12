@@ -10,6 +10,9 @@ Base URL lokal default: `http://127.0.0.1:8080`. Sesuaikan host dan port jika ko
 
 | Method | Endpoint | Autentikasi | Fungsi |
 | --- | --- | --- | --- |
+| `PUT` | `/api/v1/customers/me/documents/{documentType}` | Bearer JWT | Upload KTP/selfie/payslip ke ImgBB |
+| `GET` | `/api/v1/customers/me` | Bearer JWT | Membaca data diri akun login |
+| `PUT` | `/api/v1/customers/me` | Bearer JWT | Mengisi/memperbarui data diri akun login |
 | `POST` | `/api/v1/auth/register` | Tidak | Registrasi akun dengan role `user` |
 | `PATCH` | `/api/v1/admin/users/{userID}/role` | Bearer JWT admin | Mengubah role pengguna |
 | `POST` | `/api/v1/auth/login` | Tidak | Login menggunakan email dan password |
@@ -290,7 +293,7 @@ Preflight dengan origin yang diizinkan menghasilkan `204 No Content` tanpa body 
 ```http
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Headers: Authorization, Content-Type
-Access-Control-Allow-Methods: GET, POST, PATCH, OPTIONS
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS
 ```
 
 Preflight dengan origin yang tidak diizinkan menghasilkan `403` dengan kode `origin_not_allowed`. Pada request biasa, origin yang tidak cocok tidak mendapatkan header izin CORS, sehingga browser memblokir akses respons. CORS bukan autentikasi endpoint.
@@ -451,3 +454,56 @@ go run ./cmd/create-user --username administrator --email admin@example.com --ro
 ```
 
 CLI meminta password tersembunyi dan konfirmasi. Role default CLI adalah `user`. Skema registrasi/RBAC sudah diterapkan langsung ke Neon pada database `Loan_Banking`, 7 November 2026. Username akun lama dipertahankan dan role awalnya `user`; tidak ada akun yang diangkat otomatis menjadi admin. Repository memakai kolom `password_hash` yang sudah ada di Neon. File `migrations/002_user_roles.sql` disimpan sebagai catatan perubahan, bukan langkah manual yang perlu Anda jalankan.
+
+
+## 7. Data diri pelanggan setelah register
+
+Service data diri memakai tabel `Loan_Banking.public.customers`. Setelah register, login untuk mendapatkan Bearer token, lalu gunakan endpoint berikut:
+
+| Method | Endpoint | Keterangan |
+| --- | --- | --- |
+| `PUT` | `/api/v1/customers/me` | Membuat/mengganti seluruh field profil yang dapat diedit; sukses `200` |
+| `GET` | `/api/v1/customers/me` | Membaca profil sendiri; `404` jika belum diisi |
+
+Keduanya memerlukan `Authorization: Bearer REPLACE_WITH_ACCESS_TOKEN`. PUT memakai `Content-Type: application/json` dan body maksimal 8192 byte. Pengguna tidak mengirim `user_id`: pemilik selalu berasal dari akun aktif pada token.
+
+```json
+{
+  "nik": "3173010101900001",
+  "address": "Jl. Merdeka No. 1, Jakarta",
+  "date_of_birth": "1990-01-01",
+  "monthly_income": "7500000.00",
+  "phone": "+6281234567890",
+  "current_address": "Jl. Sudirman No. 2, Jakarta",
+  "mother_maiden_name": "Nama Ibu Contoh",
+  "occupation": "Karyawan Swasta",
+  "place_of_birth": "Jakarta",
+  "account_number": "0012345678",
+  "account_holder_name": "Nama Pemilik Rekening"
+}
+```
+
+PUT selalu mengirim ulang seluruh field wajib. Nominal berupa string desimal agar presisinya terjaga. Rekening bersifat opsional dan kedua field harus diisi/dikosongkan bersama. `current_total_debt` dan path dokumen tidak diterima pada body. Response sukses memakai `data` berisi profil, termasuk `id`, `user_id`, total utang, dan waktu pembuatan; GET juga mengembalikan bentuk profil yang sama.
+
+Aturan setiap field, contoh response JSON lengkap, daftar error, dan penjelasan desain tersedia di [dokumentasi modul customer](internal/customer/README.md).
+
+
+## 8. Upload dokumen pelanggan ke ImgBB
+
+`PUT /api/v1/customers/me/documents/{documentType}`
+
+Parameter `documentType`: `ktp_image`, `selfie_image`, atau `payslip_image`. Header autentikasi adalah `Authorization: Bearer REPLACE_WITH_ACCESS_TOKEN`. Gunakan `multipart/form-data` dengan **satu file** pada field **`image`**; jangan mengirim JSON, URL, base64, `user_id`, atau API key pada request frontend.
+
+```bash
+curl -X PUT 'http://127.0.0.1:8080/api/v1/customers/me/documents/ktp_image' \
+  -H 'Authorization: Bearer REPLACE_WITH_ACCESS_TOKEN' \
+  -F 'image=@/path/to/ktp.jpg'
+```
+
+Profil pelanggan harus sudah diisi melalui PUT JSON. File JPEG/PNG maksimal 5 MiB, maksimal 25 megapiksel, dan sisi maksimal 10000 piksel. Satu akun dibatasi 10 request upload per menit.
+
+Response berhasil `200` mengembalikan profil lengkap dalam `data`, termasuk `ktp_image_path`, `ktp_image_id`, `selfie_image_path`, `selfie_image_id`, `payslip_image_path`, dan `payslip_image_id`. Sebelum diunggah, pasangan field bernilai `null` (profil lama dapat memiliki path tanpa ID). GET profil mengembalikan metadata dokumen yang sama.
+
+Error tambahan: `400 invalid_multipart`, `400 invalid_document_type`, `400 invalid_image`, `413 image_too_large`, `429 rate_limit_exceeded`, `502 image_upload_failed`, dan `503 image_upload_unavailable`. Tanpa profil: `404 customer_not_found`. Tanpa akun aktif/token valid: `401 unauthorized`. Kegagalan database: `500 internal_error`.
+
+URL yang disimpan adalah gambar langsung `data.url` dari ImgBB, bukan halaman `url_viewer`. API key hanya dipakai backend dari `IMGBB_API_KEY` pada `.env`. Detail alur, contoh response dan kode frontend tersedia di [IMGBB.md](IMGBB.md).

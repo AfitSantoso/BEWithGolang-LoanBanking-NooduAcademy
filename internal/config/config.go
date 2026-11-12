@@ -19,6 +19,7 @@ type Config struct {
 	JWTAudience string
 	JWTTTL      time.Duration
 	CORSOrigin  string
+	ImgBBAPIKey string
 }
 
 // LoadDatabaseURL also supports administrative commands that do not need JWT settings.
@@ -57,6 +58,10 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("CORS_ORIGIN must be an exact HTTP(S) origin without a path")
 		}
 	}
+	imageKey := os.Getenv("IMGBB_API_KEY")
+	if strings.TrimSpace(imageKey) != imageKey || strings.ContainsAny(imageKey, "\r\n\t ") {
+		return Config{}, errors.New("IMGBB_API_KEY must not contain whitespace")
+	}
 	return Config{
 		HTTPAddress: valueOrDefault("HTTP_ADDRESS", "127.0.0.1:8080"),
 		DatabaseURL: databaseURL,
@@ -65,6 +70,7 @@ func Load() (Config, error) {
 		JWTAudience: valueOrDefault("JWT_AUDIENCE", "loanbanking-web"),
 		JWTTTL:      tokenTTL,
 		CORSOrigin:  origin,
+		ImgBBAPIKey: imageKey,
 	}, nil
 }
 
