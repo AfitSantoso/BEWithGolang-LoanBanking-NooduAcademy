@@ -17,6 +17,7 @@ var (
 	ErrForbidden           = errors.New("admin role required")
 	ErrInvalidRegistration = errors.New("invalid registration input")
 	ErrInvalidRole         = errors.New("invalid role or user ID")
+	ErrInvalidPassword     = errors.New("invalid new password")
 )
 
 const (
@@ -49,6 +50,7 @@ type UserRepository interface {
 	FindByID(context.Context, int64) (User, error)
 	Create(context.Context, string, string, string, string) (User, error)
 	SetRole(context.Context, int64, int64, string) (User, error)
+	UpdatePassword(context.Context, int64, string, string) error
 }
 
 func NormalizeEmail(email string) (string, error) {

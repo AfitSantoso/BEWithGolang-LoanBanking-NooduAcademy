@@ -21,6 +21,10 @@ type stubService struct {
 	roleCalls     int
 }
 
+func (service *stubService) SetPassword(_ context.Context, _ string, _ string, _ string) error {
+	return service.err
+}
+
 func (service *stubService) Register(ctx context.Context, username, email, password string) (auth.User, error) {
 	service.registerCalls++
 	return auth.User{ID: 43, Username: username, Email: email, Role: auth.RoleUser, PasswordHash: "secret-hash"}, service.err

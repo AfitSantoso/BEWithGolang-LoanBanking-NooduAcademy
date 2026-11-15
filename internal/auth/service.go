@@ -114,3 +114,30 @@ func (service *Service) SetUserRole(ctx context.Context, accessToken string, use
 	user.PasswordHash = ""
 	return user, nil
 }
+
+// A Google-only account may establish its first local password using its JWT.
+// Changing an existing local password additionally requires the current password.
+func (service *Service) SetPassword(ctx context.Context, accessToken, currentPassword, newPassword string) error {
+	userID, err := service.tokens.Verify(accessToken)
+	if err != nil {
+		return ErrInvalidCredentials
+	}
+	user, err := service.repository.FindByID(ctx, userID)
+	if errors.Is(err, ErrUserNotFound) {
+		return ErrInvalidCredentials
+	}
+	if err != nil {
+		return err
+	}
+	if !user.IsActive {
+		return ErrInvalidCredentials
+	}
+	if user.PasswordHash != "" && (len(currentPassword) > 72 || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil) {
+		return ErrInvalidCredentials
+	}
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return ErrInvalidPassword
+	}
+	return service.repository.UpdatePassword(ctx, user.ID, user.PasswordHash, hash)
+}

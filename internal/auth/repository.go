@@ -52,6 +52,17 @@ func scanUser(row pgx.Row) (User, error) {
 	return user, err
 }
 
+func (repository *PostgresRepository) UpdatePassword(ctx context.Context, userID int64, expectedHash, newHash string) error {
+	result, err := repository.pool.Exec(ctx, `UPDATE public.users SET password_hash=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND is_active IS TRUE AND COALESCE(password_hash,'')=$3`, newHash, userID, expectedHash)
+	if err != nil {
+		return errors.New("cannot update password")
+	}
+	if result.RowsAffected() != 1 {
+		return ErrInvalidCredentials
+	}
+	return nil
+}
+
 func (repository *PostgresRepository) Create(ctx context.Context, username, email, passwordHash, role string) (User, error) {
 	if !ValidRole(role) {
 		return User{}, ErrInvalidRole

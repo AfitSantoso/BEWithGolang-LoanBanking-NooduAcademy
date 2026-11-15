@@ -11,6 +11,9 @@ Base URL lokal default: `http://127.0.0.1:8080`. Sesuaikan host dan port jika ko
 | Method | Endpoint | Autentikasi | Fungsi |
 | --- | --- | --- | --- |
 | `PUT` | `/api/v1/customers/me/documents/{documentType}` | Bearer JWT | Upload KTP/selfie/payslip ke ImgBB |
+| `GET` | `/auth/google` | Tidak (Bearer opsional untuk penautan) | Redirect login Google |
+| `GET` | `/auth/google/callback` | State dan cookie OAuth | Verifikasi Google lalu JWT aplikasi |
+| `PUT` | `/api/v1/auth/password` | Bearer JWT | Menetapkan/mengubah password lokal |
 | `GET` | `/api/v1/customers/me` | Bearer JWT | Membaca data diri akun login |
 | `PUT` | `/api/v1/customers/me` | Bearer JWT | Mengisi/memperbarui data diri akun login |
 | `POST` | `/api/v1/auth/register` | Tidak | Registrasi akun dengan role `user` |
@@ -507,3 +510,30 @@ Response berhasil `200` mengembalikan profil lengkap dalam `data`, termasuk `ktp
 Error tambahan: `400 invalid_multipart`, `400 invalid_document_type`, `400 invalid_image`, `413 image_too_large`, `429 rate_limit_exceeded`, `502 image_upload_failed`, dan `503 image_upload_unavailable`. Tanpa profil: `404 customer_not_found`. Tanpa akun aktif/token valid: `401 unauthorized`. Kegagalan database: `500 internal_error`.
 
 URL yang disimpan adalah gambar langsung `data.url` dari ImgBB, bukan halaman `url_viewer`. API key hanya dipakai backend dari `IMGBB_API_KEY` pada `.env`. Detail alur, contoh response dan kode frontend tersedia di [IMGBB.md](IMGBB.md).
+
+
+## 9. Login Google OAuth dan akun email yang sama
+
+| Method | Endpoint | Kegunaan |
+| --- | --- | --- |
+| `GET` | `/auth/google` | `302` menuju login Google; buka lewat browser |
+| `GET` | `/auth/google/callback` | Verifikasi callback, buat/tautkan akun di `users`, lalu `200` JSON JWT aplikasi |
+| `PUT` | `/api/v1/auth/password` | Setelah login, tetapkan password lokal agar akun Google juga bisa login email/password |
+
+Email memakai index unik yang sama: akun Google yang didaftarkan ulang melalui `POST /api/v1/auth/register` menghasilkan `409 user_exists`, tanpa akun kedua. Login Google berulang menggunakan Google subject untuk mempertahankan ID akun.
+
+Callback sukses mengembalikan `data.access_token`, `data.token_type`, `data.expires_in`, dan `data.user`, dengan bentuk sama seperti login email/password. Callback adalah response JSON backend, belum menavigasi kembali ke halaman frontend secara otomatis. Akun baru ber-role `user`; akun lama mempertahankan role/password/profilnya.
+
+Akun yang dibuat Google belum memiliki password lokal. Dengan JWT dari callback, kirim JSON berikut ke `PUT /api/v1/auth/password` (header Bearer dan Content-Type JSON wajib):
+
+```json
+{
+  "new_password": "REPLACE_WITH_A_STRONG_LOCAL_PASSWORD"
+}
+```
+
+Jika password lokal sudah ada, sertakan `current_password` bersama `new_password`. Setelah berhasil, email/password lokal dan Sign in with Google mengakses akun yang sama. Password Google tidak pernah diterima atau disimpan aplikasi.
+
+`GET /auth/google?format=json` mengembalikan `data.authorization_url` beserta cookie state. Jika request tersebut disertai Bearer JWT akun lama, callback akan menjadi penautan eksplisit akun tersebut, bukan pembuatan akun lain. Ini diperlukan untuk email non-Gmail/non-Workspace yang belum pernah tertaut.
+
+Detail konfigurasi `.env`, browser/cookie, aturan penautan email, response, rate limit dan daftar error tersedia di [GOOGLE-OAUTH.md](GOOGLE-OAUTH.md).

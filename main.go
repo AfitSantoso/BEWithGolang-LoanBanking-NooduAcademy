@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"backend-loanbanking/internal/config"
 	"backend-loanbanking/internal/customer"
 	"backend-loanbanking/internal/database"
+	"backend-loanbanking/internal/googleauth"
 	"backend-loanbanking/internal/httpapi"
 	"backend-loanbanking/internal/imagehost/imgbb"
 )
@@ -49,9 +51,14 @@ func run(logger *slog.Logger) error {
 		customerOptions = append(customerOptions, customer.WithImageUploader(imgbb.NewClient(settings.ImgBBAPIKey)))
 	}
 	customerService := customer.NewService(customer.NewPostgresRepository(pool), customerOptions...)
+	var googleService googleauth.LoginService
+	if settings.GoogleClientID != "" {
+		googleService = googleauth.NewService(googleauth.NewPostgresRepository(pool), googleauth.NewGoogleProvider(settings.GoogleClientID, settings.GoogleClientSecret, settings.GoogleRedirectURL), tokens)
+	}
+	googleHandler := googleauth.NewHandler(googleService, service, strings.HasPrefix(settings.GoogleRedirectURL, "https://"), logger)
 	server := &http.Server{
 		Addr:              settings.HTTPAddress,
-		Handler:           httpapi.NewRouter(service, logger, pool.Ping, settings.CORSOrigin, httpapi.WithCustomerService(customerService)),
+		Handler:           httpapi.NewRouter(service, logger, pool.Ping, settings.CORSOrigin, httpapi.WithCustomerService(customerService), httpapi.WithGoogleAuth(googleHandler)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      90 * time.Second,

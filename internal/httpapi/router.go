@@ -15,6 +15,7 @@ import (
 
 	"backend-loanbanking/internal/auth"
 	customerhttp "backend-loanbanking/internal/customer/http"
+	"backend-loanbanking/internal/googleauth"
 	authmiddleware "backend-loanbanking/internal/httpapi/middleware"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,7 @@ type AuthService interface {
 	CurrentUser(context.Context, string) (auth.User, error)
 	Register(context.Context, string, string, string) (auth.User, error)
 	SetUserRole(context.Context, string, int64, string) (auth.User, error)
+	SetPassword(context.Context, string, string, string) error
 }
 
 type handler struct {
@@ -35,9 +37,16 @@ type handler struct {
 	ping    func(context.Context) error
 }
 
-type routerOptions struct{ customers customerhttp.Service }
+type routerOptions struct {
+	customers customerhttp.Service
+	google    *googleauth.Handler
+}
 
 type Option func(*routerOptions)
+
+func WithGoogleAuth(handler *googleauth.Handler) Option {
+	return func(options *routerOptions) { options.google = handler }
+}
 
 func WithCustomerService(service customerhttp.Service) Option {
 	return func(options *routerOptions) { options.customers = service }
@@ -56,11 +65,25 @@ func NewRouter(service AuthService, logger *slog.Logger, ping func(context.Conte
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	router.Get("/readyz", handlers.ready)
+	googleHandler := settings.google
+	if googleHandler == nil {
+		googleHandler = googleauth.NewHandler(nil, service, false, logger)
+	}
+	googleLimit := func(limit int) func(http.Handler) http.Handler {
+		return httprate.LimitBy(limit, time.Minute, clientIP, httprate.WithLimitHandler(func(writer http.ResponseWriter, request *http.Request) {
+			writeError(writer, 429, "rate_limit_exceeded", "Too many Google login requests; try again later")
+		}))
+	}
+	router.With(googleLimit(10)).Get("/auth/google", googleHandler.Start)
+	router.With(googleLimit(20)).Get("/auth/google/callback", googleHandler.Callback)
 	router.Route("/api/v1/auth", func(router chi.Router) {
 		router.With(httprate.LimitBy(5, time.Minute, clientIP, httprate.WithLimitHandler(func(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, http.StatusTooManyRequests, "rate_limit_exceeded", "Too many login attempts; try again later")
 		}))).Post("/login", handlers.login)
 		router.Get("/me", handlers.currentUser)
+		router.With(httprate.LimitBy(5, time.Minute, clientIP, httprate.WithLimitHandler(func(writer http.ResponseWriter, request *http.Request) {
+			writeError(writer, 429, "rate_limit_exceeded", "Too many password changes; try again later")
+		}))).Put("/password", handlers.setPassword)
 		router.With(httprate.LimitBy(5, time.Minute, clientIP, httprate.WithLimitHandler(func(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, http.StatusTooManyRequests, "rate_limit_exceeded", "Too many registration attempts; try again later")
 		}))).Post("/register", handlers.register)
@@ -113,6 +136,28 @@ func (handlers *handler) currentUser(writer http.ResponseWriter, request *http.R
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"data": user})
+}
+
+func (handlers *handler) setPassword(writer http.ResponseWriter, request *http.Request) {
+	token, ok := bearerToken(request)
+	if !ok {
+		writeUnauthorized(writer)
+		return
+	}
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	if err := handlers.service.SetPassword(ctx, token, input.CurrentPassword, input.NewPassword); err != nil {
+		handlers.serviceError(writer, request, err)
+		return
+	}
+	writeJSON(writer, 200, map[string]any{"data": map[string]string{"message": "Password updated"}})
 }
 
 func bearerToken(request *http.Request) (string, bool) {
@@ -202,6 +247,8 @@ func (handlers *handler) ready(writer http.ResponseWriter, request *http.Request
 
 func (handlers *handler) serviceError(writer http.ResponseWriter, request *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrInvalidPassword):
+		writeError(writer, 400, "invalid_password", "Use a new password of at least 12 characters and at most 72 bytes, not only whitespace")
 	case errors.Is(err, auth.ErrInvalidRegistration):
 		writeError(writer, http.StatusBadRequest, "invalid_registration", "Provide a username of 1 to 50 characters, a valid email, and a password of at least 12 characters and at most 72 bytes; password must not contain only whitespace")
 	case errors.Is(err, auth.ErrInvalidRole):
@@ -262,6 +309,7 @@ func cors(allowedOrigin string) func(http.Handler) http.Handler {
 			origin := request.Header.Get("Origin")
 			if origin != "" && origin == allowedOrigin {
 				writer.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				writer.Header().Set("Access-Control-Allow-Credentials", "true")
 				writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 				writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS")
 			}

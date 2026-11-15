@@ -12,14 +12,17 @@ import (
 )
 
 type Config struct {
-	HTTPAddress string
-	DatabaseURL string
-	JWTSecret   string
-	JWTIssuer   string
-	JWTAudience string
-	JWTTTL      time.Duration
-	CORSOrigin  string
-	ImgBBAPIKey string
+	HTTPAddress        string
+	DatabaseURL        string
+	JWTSecret          string
+	JWTIssuer          string
+	JWTAudience        string
+	JWTTTL             time.Duration
+	CORSOrigin         string
+	ImgBBAPIKey        string
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
 }
 
 // LoadDatabaseURL also supports administrative commands that do not need JWT settings.
@@ -62,15 +65,27 @@ func Load() (Config, error) {
 	if strings.TrimSpace(imageKey) != imageKey || strings.ContainsAny(imageKey, "\r\n\t ") {
 		return Config{}, errors.New("IMGBB_API_KEY must not contain whitespace")
 	}
+	googleID, googleSecret, googleRedirect := os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"), os.Getenv("GOOGLE_REDIRECT_URL")
+	if googleID != "" || googleSecret != "" || googleRedirect != "" {
+		if googleID == "" || googleSecret == "" || googleRedirect == "" || strings.ContainsAny(googleID+googleSecret, " \r\n\t") {
+			return Config{}, errors.New("Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URL together without whitespace")
+		}
+		callback, err := url.Parse(googleRedirect)
+		if err != nil || callback.Host == "" || callback.User != nil || callback.RawQuery != "" || callback.Fragment != "" || callback.Path != "/auth/google/callback" ||
+			(callback.Scheme != "https" && (callback.Scheme != "http" || (callback.Hostname() != "127.0.0.1" && callback.Hostname() != "localhost" && callback.Hostname() != "::1"))) {
+			return Config{}, errors.New("GOOGLE_REDIRECT_URL must be HTTPS (HTTP allowed on loopback only) with path /auth/google/callback, without credentials, query or fragment")
+		}
+	}
 	return Config{
-		HTTPAddress: valueOrDefault("HTTP_ADDRESS", "127.0.0.1:8080"),
-		DatabaseURL: databaseURL,
-		JWTSecret:   secret,
-		JWTIssuer:   valueOrDefault("JWT_ISSUER", "loanbanking-api"),
-		JWTAudience: valueOrDefault("JWT_AUDIENCE", "loanbanking-web"),
-		JWTTTL:      tokenTTL,
-		CORSOrigin:  origin,
-		ImgBBAPIKey: imageKey,
+		HTTPAddress:    valueOrDefault("HTTP_ADDRESS", "127.0.0.1:8080"),
+		DatabaseURL:    databaseURL,
+		JWTSecret:      secret,
+		JWTIssuer:      valueOrDefault("JWT_ISSUER", "loanbanking-api"),
+		JWTAudience:    valueOrDefault("JWT_AUDIENCE", "loanbanking-web"),
+		JWTTTL:         tokenTTL,
+		CORSOrigin:     origin,
+		ImgBBAPIKey:    imageKey,
+		GoogleClientID: googleID, GoogleClientSecret: googleSecret, GoogleRedirectURL: googleRedirect,
 	}, nil
 }
 

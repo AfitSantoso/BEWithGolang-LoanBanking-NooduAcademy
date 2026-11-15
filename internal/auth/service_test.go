@@ -19,6 +19,11 @@ type stubRepository struct {
 	setRoleCalls  int
 }
 
+func (repo *stubRepository) UpdatePassword(_ context.Context, _ int64, _ string, hash string) error {
+	repo.createdHash = hash
+	return repo.err
+}
+
 func (repository *stubRepository) Create(ctx context.Context, username, email, hash, role string) (User, error) {
 	repository.createdRole, repository.createdHash = role, hash
 	return User{ID: 43, Username: username, Email: email, Role: role, PasswordHash: hash, IsActive: true}, repository.err
